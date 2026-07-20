@@ -1,0 +1,12 @@
+.venv/
+secrets/
+.env
+*.pem
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+backups/
+__pycache__/
+*.pyc
+sessions.json
+.claude/
