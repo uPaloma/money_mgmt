@@ -1,0 +1,8 @@
+{
+  "name": "Money Aggregator",
+  "short_name": "Money",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a19",
+  "theme_color": "#1a1a19"
+}

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a19">
+  <title>Money</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/echarts.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Money</h1>
+      <span id="range" class="muted"></span>
+    </div>
+  </header>
+
+  <section class="filters card">
+    <label class="field">Period
+      <select id="preset">
+        <option value="all" selected>All time</option>
+        <option value="month">This month</option>
+        <option value="3m">Last 3 months</option>
+        <option value="6m">Last 6 months</option>
+        <option value="12m">Last 12 months</option>
+        <option value="ytd">Year to date</option>
+        <option value="custom">Custom…</option>
+      </select>
+    </label>
+    <label class="field custom-dates" hidden>From <input type="date" id="from"></label>
+    <label class="field custom-dates" hidden>To <input type="date" id="to"></label>
+    <label class="field">Flow
+      <select id="flow">
+        <option value="">All</option>
+        <option value="income">Income</option>
+        <option value="expense">Expense</option>
+        <option value="transfer">Transfers</option>
+      </select>
+    </label>
+    <div class="field">Accounts <div id="msel-account"></div></div>
+    <div class="field">Categories <div id="msel-category"></div></div>
+    <label class="field grow">Search <input type="search" id="q" placeholder="description / party…"></label>
+    <button id="reset" type="button" class="ghost">Reset</button>
+  </section>
+
+  <section id="tiles" class="tiles"></section>
+
+  <section class="charts">
+    <div class="card"><h3>Monthly income vs expense</h3><div id="chart-month" class="chart"></div></div>
+    <div class="card"><h3>Spending by category</h3><div id="chart-cat" class="chart"></div></div>
+    <div class="card"><h3>Top payees</h3><div id="chart-merch" class="chart"></div></div>
+    <div class="card"><h3>By account</h3><div id="chart-acct" class="chart"></div></div>
+  </section>
+
+  <section class="card">
+    <div class="controls">
+      <label class="field">Group by
+        <select id="groupby">
+          <option value="list" selected>List of payments</option>
+          <option value="category">Category</option>
+          <option value="merchant">Merchant / payee</option>
+          <option value="month">Month</option>
+          <option value="account">Account</option>
+        </select>
+      </label>
+      <span id="count" class="muted"></span>
+      <button id="density" type="button" class="ghost density-toggle"></button>
+    </div>
+    <div id="table" class="table-wrap"></div>
+    <button id="more" type="button" class="ghost" hidden>Load more</button>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
