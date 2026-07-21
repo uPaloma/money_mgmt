@@ -84,6 +84,17 @@ button.ghost:hover { color: var(--ink); border-color: color-mix(in srgb, var(--a
 .meter { height: 6px; border-radius: 4px; background: color-mix(in srgb, var(--sub) 22%, transparent); margin-top: .5rem; overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
 
+/* --- balances (bank-reported, filter-independent) --- */
+.bal-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .6rem; }
+.bal { border: 1px solid var(--line); border-radius: 10px; padding: .55rem .7rem; cursor: pointer; transition: border-color .12s; }
+.bal[data-key]:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.bal-k { font-size: .72rem; color: var(--sub); }
+.bal-n { font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bal-v { font-size: 1.2rem; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; margin-top: .15rem; }
+.bal-v.pos { color: var(--good); } .bal-v.neg { color: var(--crit); }
+.bal-t { font-size: .68rem; color: var(--sub); text-transform: uppercase; letter-spacing: .03em; }
+.bal-total { cursor: default; background: color-mix(in srgb, var(--accent) 7%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+
 /* --- charts --- */
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
 .chart { width: 100%; height: 260px; }

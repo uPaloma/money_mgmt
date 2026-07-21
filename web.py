@@ -25,7 +25,7 @@ import categorize
 import db
 
 STATIC = Path(__file__).parent / "static"
-BALANCE_PREFERENCE = ("ITAV", "CLBD", "ITBD", "OTHR")
+BALANCE_PREFERENCE = db.BALANCE_PREFERENCE
 
 app = FastAPI(title="Money Aggregator", version="0.2")
 
@@ -130,23 +130,45 @@ def stats_summary(f=Depends(filters)) -> dict:
                        THEN -t.signed_amount END), 0) AS expense,
           COALESCE(SUM(CASE WHEN c.kind='transfer'
                        THEN ABS(t.signed_amount) END), 0) AS transfers,
+          COALESCE(SUM(t.signed_amount), 0) AS net_cash,
           COUNT(*) AS count
         {BASE} {where}""", tuple(params))[0]
+    # net  = income - expense, both excluding transfer-kind categories. Moving
+    #        money between your own accounts must not read as earning/spending.
+    # net_cash = every selected transaction summed as-is, transfers included.
+    #        This is the figure that reconciles against account balances; it
+    #        differs from `net` by exactly the transfer legs in the selection.
     r["net"] = round(r["income"] - r["expense"], 2)
-    for k in ("income", "expense", "transfers"):
+    for k in ("income", "expense", "transfers", "net_cash"):
         r[k] = round(r[k], 2)
     return r
 
 
 @app.get("/api/stats/by-category")
 def stats_by_category(f=Depends(filters)) -> list[dict]:
+    """Per-category money in and out, kept directional.
+
+    `expense` and `income` are separate because summing ABS() mixes the two:
+    a category holding both a refund and a purchase would report their sum as
+    "spending". The `expense` column here adds up to exactly the Expenses tile.
+    Grouped by NAME, not c.id: transactions with no tx_category row at all join
+    to NULL and would otherwise form a second, separate "Uncategorized" slice.
+    """
     where, params = f
     return rows(f"""
         SELECT COALESCE(c.name,'Uncategorized') AS category,
-               c.group_name, c.color, COALESCE(c.kind,'expense') AS kind,
-               ROUND(SUM(ABS(t.signed_amount)),2) AS total, COUNT(*) AS count
+               MAX(c.group_name) AS group_name, MAX(c.color) AS color,
+               COALESCE(MAX(c.kind),'expense') AS kind,
+               ROUND(COALESCE(SUM(CASE WHEN t.credit_debit_indicator='DBIT'
+                                  THEN -t.signed_amount END),0),2) AS expense,
+               ROUND(COALESCE(SUM(CASE WHEN t.credit_debit_indicator='CRDT'
+                                  THEN t.signed_amount END),0),2) AS income,
+               ROUND(SUM(t.signed_amount),2) AS net,
+               ROUND(SUM(ABS(t.signed_amount)),2) AS total,
+               COUNT(*) AS count
         {BASE} {where}
-        GROUP BY c.id ORDER BY total DESC""", tuple(params))
+        GROUP BY COALESCE(c.name,'Uncategorized')
+        ORDER BY expense DESC""", tuple(params))
 
 
 @app.get("/api/stats/by-month")
@@ -180,8 +202,14 @@ def stats_by_account(f=Depends(filters)) -> list[dict]:
     where, params = f
     return rows(f"""
         SELECT t.account_key, a.name, a.aspsp_name,
-          ROUND(SUM(CASE WHEN t.credit_debit_indicator='CRDT' THEN t.signed_amount END),2) AS income,
-          ROUND(SUM(CASE WHEN t.credit_debit_indicator='DBIT' THEN -t.signed_amount END),2) AS expense,
+          ROUND(COALESCE(SUM(CASE WHEN t.credit_debit_indicator='CRDT'
+                            AND COALESCE(c.kind,'expense')!='transfer'
+                       THEN t.signed_amount END),0),2) AS income,
+          ROUND(COALESCE(SUM(CASE WHEN t.credit_debit_indicator='DBIT'
+                            AND COALESCE(c.kind,'expense')!='transfer'
+                       THEN -t.signed_amount END),0),2) AS expense,
+          ROUND(COALESCE(SUM(t.signed_amount),0),2) AS net_cash,
+          MIN({DATE_EXPR}) AS first_date, MAX({DATE_EXPR}) AS last_date,
           COUNT(*) AS count
         {BASE} LEFT JOIN accounts a ON a.account_key = t.account_key {where}
         GROUP BY t.account_key ORDER BY expense DESC""", tuple(params))

@@ -57,8 +57,15 @@ CATEGORIES = [
 
     ("Bank Fees",         "Fees",       "expense",  "#8d6e63"),
 
-    ("P2P Transfer",      "Transfers",  "transfer", "#607d8b"),
-    ("Shared Expenses",   "Transfers",  "transfer", "#78909c"),
+    # Cash leaves the tracked world: you can no longer itemize where it went,
+    # so it counts as spending rather than an internal 'transfer'.
+    ("Cash Withdrawal",   "Cash",       "expense",  "#00acc1"),
+
+    # Only moves between the user's OWN accounts are 'transfer' (excluded from
+    # income/expense on both sides). Paying a person is real spending: with
+    # every account connected, hiding it from expenses just loses the money.
+    ("P2P Transfer",      "Transfers",  "expense",  "#607d8b"),
+    ("Shared Expenses",   "Transfers",  "expense",  "#78909c"),
     ("Savings",           "Transfers",  "transfer", "#90a4ae"),
 
     ("Uncategorized",     "Other",      "expense",  "#9e9e9e"),
@@ -120,7 +127,25 @@ RULES = [
     (26, "text", "weshare",   "Shared Expenses"),      # mock
     (26, "text", "paypal",    "P2P Transfer"),
 
+    # --- cash withdrawals ---
+    # Whole-word matching makes short tokens safe here: 'atm' no longer hits
+    # "Bankomat", 'cash' no longer hits "Cashback".
+    (19, "text", "atm",              "Cash Withdrawal"),
+    (19, "text", "geldautomat",      "Cash Withdrawal"),
+    (19, "text", "bankomat",         "Cash Withdrawal"),
+    (19, "text", "bargeld",          "Cash Withdrawal"),
+    (19, "text", "barabhebung",      "Cash Withdrawal"),
+    (19, "text", "auszahlung",       "Cash Withdrawal"),
+    (19, "text", "cash withdrawal",  "Cash Withdrawal"),
+    (19, "text", "withdrawal",       "Cash Withdrawal"),
+    (19, "text", "hæveautomat",      "Cash Withdrawal"),   # DK
+    (19, "text", "kontanthævning",   "Cash Withdrawal"),   # DK
+    (19, "text", "uttak",            "Cash Withdrawal"),   # NO
+    (19, "text", "minibank",         "Cash Withdrawal"),   # NO
+
     # --- MCC (card payments) ---
+    (50, "mcc", "6011",        "Cash Withdrawal"),   # automated cash disbursement
+    (50, "mcc", "6010",        "Cash Withdrawal"),   # manual cash disbursement
     (50, "mcc", "5411",        "Groceries"),
     (50, "mcc", "5412",        "Groceries"),
     (50, "mcc", "5811-5814",   "Restaurants"),
@@ -138,7 +163,54 @@ RULES = [
     (80, "btc", "fee",       "Bank Fees"),
     (80, "btc", "charge",    "Bank Fees"),
     (80, "btc", "interest",  "Interest"),
+    (80, "btc", "CWDL",      "Cash Withdrawal"),   # ISO 20022 cash withdrawal
+    (80, "btc", "ATMD",      "Cash Withdrawal"),   # ATM debit
 ]
+
+
+# One-off corrections to categories that were already seeded on existing DBs,
+# where seed() no longer runs. Keyed by name; applied every run, idempotent.
+KIND_FIXES = {
+    "P2P Transfer": "expense",
+    "Shared Expenses": "expense",
+}
+
+
+def migrate(conn: sqlite3.Connection) -> dict:
+    """Bring an already-seeded DB up to date with the seed lists above.
+
+    seed() only fires on an empty DB, so without this, any category or rule
+    added here would never reach an existing install. Adds what is missing by
+    name (categories) and by (match_type, pattern, category) (rules), and
+    re-aligns KIND_FIXES. Idempotent: a second run reports all zeros.
+
+    Caveat: because this re-adds anything missing, deleting a seeded rule from
+    the DB alone is not durable -- it comes back on the next run. To retire a
+    rule for good, remove it from RULES here too. Learned rules are never
+    touched (they are not in RULES).
+    """
+    kinds = 0
+    for name, kind in KIND_FIXES.items():
+        kinds += conn.execute("UPDATE categories SET kind=? WHERE name=? AND kind!=?",
+                              (kind, name, kind)).rowcount
+
+    have_cats = {n for (n,) in conn.execute("SELECT name FROM categories")}
+    new_cats = [c for c in CATEGORIES if c[0] not in have_cats]
+    conn.executemany(
+        "INSERT INTO categories (name, group_name, kind, color) VALUES (?,?,?,?)",
+        new_cats)
+
+    ids = {n: i for i, n in conn.execute("SELECT id, name FROM categories")}
+    have_rules = {tuple(r) for r in conn.execute(
+        "SELECT match_type, pattern, category_id FROM category_rules")}
+    new_rules = [(p, mt, pat, ids[cat]) for p, mt, pat, cat in RULES
+                 if cat in ids and (mt, pat, ids[cat]) not in have_rules]
+    conn.executemany(
+        "INSERT INTO category_rules (priority, match_type, pattern, category_id) "
+        "VALUES (?,?,?,?)", new_rules)
+
+    conn.commit()
+    return {"kinds": kinds, "categories": len(new_cats), "rules": len(new_rules)}
 
 
 def seed(conn: sqlite3.Connection) -> None:
@@ -166,10 +238,29 @@ def _mcc_match(pattern: str, mcc: str | None) -> bool:
     return mcc == pattern
 
 
+_WORD_RE: dict[str, re.Pattern] = {}
+
+
+def _word_re(pattern: str) -> re.Pattern:
+    """Compile `pattern` to a whole-word matcher (cached).
+
+    Plain substring matching produced severe false positives: 'el' matched
+    "MobilePay Emma Nielsen", 'spar' matched "Opsparing" (savings), 'gas'
+    matched "Magasin". Boundaries are only added on the sides that begin/end
+    with a word character, so patterns like 'lookfantastic.com' still match.
+    """
+    rx = _WORD_RE.get(pattern)
+    if rx is None:
+        body = re.escape(pattern)
+        pre = r"\b" if pattern[:1].isalnum() else ""
+        post = r"\b" if pattern[-1:].isalnum() else ""
+        rx = _WORD_RE[pattern] = re.compile(pre + body + post, re.IGNORECASE)
+    return rx
+
+
 def _matches(match_type: str, pattern: str, t: dict) -> bool:
     if match_type == "mcc":
         return _mcc_match(pattern, t["merchant_category_code"])
-    pat = pattern.lower()
     if match_type == "merchant":
         hay = f"{t['creditor_name'] or ''} {t['debtor_name'] or ''}"
     elif match_type == "remittance":
@@ -178,7 +269,7 @@ def _matches(match_type: str, pattern: str, t: dict) -> bool:
         hay = t["bank_transaction_code"] or ""
     else:  # 'text' and 'learned' = merchant + remittance
         hay = f"{t['creditor_name'] or ''} {t['debtor_name'] or ''} {t['remittance_information'] or ''}"
-    return pat in hay.lower()
+    return _word_re(pattern).search(hay) is not None
 
 
 # --- learning from a manual classification --------------------------------
@@ -268,7 +359,7 @@ def categorize(conn: sqlite3.Connection) -> dict:
     """Auto-categorize every non-manual transaction. Returns a distribution."""
     conn.row_factory = sqlite3.Row
     rules = conn.execute(
-        "SELECT priority, match_type, pattern, category_id FROM category_rules "
+        "SELECT id, priority, match_type, pattern, category_id FROM category_rules "
         "ORDER BY priority, id").fetchall()
     uncategorized = conn.execute(
         "SELECT id FROM categories WHERE name='Uncategorized'").fetchone()[0]
@@ -286,7 +377,7 @@ def categorize(conn: sqlite3.Connection) -> dict:
         cat_id, rule_id = uncategorized, None
         for r in rules:
             if _matches(r["match_type"], r["pattern"], t):
-                cat_id, rule_id = r["category_id"], r["priority"]
+                cat_id, rule_id = r["category_id"], r["id"]  # id, not priority
                 break
         conn.execute(
             """INSERT INTO tx_category (dedup_id, category_id, source, matched_rule_id, updated_at)
@@ -309,13 +400,20 @@ def categorize(conn: sqlite3.Connection) -> dict:
 
 def run(conn: sqlite3.Connection) -> dict:
     seed(conn)
-    return categorize(conn)
+    migrated = migrate(conn)
+    result = categorize(conn)
+    result["migrated"] = migrated
+    return result
 
 
 def main() -> None:
     conn = db.connect()
     result = run(conn)
     total = sum(r["n"] for r in result["distribution"])
+    m = result["migrated"]
+    if any(m.values()):
+        print(f"migrated: +{m['categories']} categories, +{m['rules']} rules, "
+              f"{m['kinds']} kind(s) corrected")
     print(f"categorized {result['categorized']} transactions\n")
     for r in result["distribution"]:
         pct = 100 * r["n"] / total if total else 0

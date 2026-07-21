@@ -189,7 +189,49 @@ async function init() {
   };
   $("more").onclick = () => loadList(true);
   addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
+  renderBalances();   // point-in-time, so fetched once and NOT tied to filters
   refresh();
+}
+
+// --- balances -------------------------------------------------------------
+// These come from the bank, not from the transaction table, so they ignore the
+// filter bar entirely. Kept visually separate for that reason: everything below
+// answers "in this selection", this answers "right now".
+async function renderBalances() {
+  const accts = await fetch("/api/accounts").then((r) => r.json());
+  const withBal = accts.filter((a) => a.balance);
+  if (!withBal.length) {
+    $("balances").innerHTML = '<span class="muted">No balances stored yet — run poll.py.</span>';
+    return;
+  }
+  // Only total when every account shares one currency; summing EUR+DKK is a lie.
+  const curs = new Set(withBal.map((a) => a.balance.currency || a.currency));
+  const stale = withBal.map((a) => a.balance.reference_date).filter(Boolean).sort()[0];
+  $("bal-note").textContent =
+    `· as reported by the bank${stale ? `, oldest ${stale}` : ""} · not affected by filters`;
+
+  const fmt = (v, cur) => new Intl.NumberFormat(undefined,
+    { style: "currency", currency: cur || CUR }).format(v);
+  const items = withBal.map((a) => {
+    const b = a.balance, v = Number(b.amount);
+    return `<div class="bal" data-key="${esc(a.account_key)}" title="Filter to this account">
+        <div class="bal-k">${esc(a.aspsp_name || "")}</div>
+        <div class="bal-n">${esc(a.name || a.iban || "")}</div>
+        <div class="bal-v ${v < 0 ? "neg" : "pos"}">${fmt(v, b.currency)}</div>
+        <div class="bal-t">${esc(b.balance_type || "?")}${b.reference_date ? " · " + esc(b.reference_date) : ""}</div>
+      </div>`;
+  });
+  if (curs.size === 1) {
+    const sum = withBal.reduce((s, a) => s + Number(a.balance.amount), 0);
+    items.push(`<div class="bal bal-total">
+        <div class="bal-k">Total</div><div class="bal-n">${withBal.length} accounts</div>
+        <div class="bal-v ${sum < 0 ? "neg" : "pos"}">${fmt(sum, [...curs][0])}</div>
+        <div class="bal-t">net worth</div>
+      </div>`);
+  }
+  $("balances").innerHTML = items.join("");
+  $("balances").querySelectorAll(".bal[data-key]").forEach((el) =>
+    (el.onclick = () => { ACC.set([el.dataset.key]); refresh(); }));
 }
 
 // --- refresh everything ---------------------------------------------------
@@ -210,8 +252,9 @@ async function refresh() {
 function renderTiles(s, byCat) {
   const uncat = (byCat.find((r) => r.category === "Uncategorized") || {}).count || 0;
   const pct = s.count ? Math.round(100 * (s.count - uncat) / s.count) : 100;
-  const tile = (k, v, cls = "", extra = "") =>
-    `<div class="tile"><div class="k">${k}</div><div class="v ${cls}">${v}</div>${extra}</div>`;
+  const tile = (k, v, cls = "", title = "") =>
+    `<div class="tile"${title ? ` title="${title}"` : ""}><div class="k">${k}</div>` +
+    `<div class="v ${cls}">${v}</div></div>`;
   const uncatTile =
     `<div class="tile clickable" id="tile-uncat" title="Show uncategorized">
        <div class="k"><span>Uncategorized</span><span>${pct}% done</span></div>
@@ -219,10 +262,13 @@ function renderTiles(s, byCat) {
        <div class="meter"><span style="width:${pct}%"></span></div>
      </div>`;
   $("tiles").innerHTML =
-    tile("Income", money(s.income), "pos") +
-    tile("Expenses", money(s.expense), "neg") +
-    tile("Net", money(s.net), s.net < 0 ? "neg" : "pos") +
-    tile("Transfers", money(s.transfers)) +
+    tile("Income", money(s.income), "pos", "Money in, excluding transfers between your own accounts") +
+    tile("Expenses", money(s.expense), "neg", "Money out, excluding transfers between your own accounts") +
+    tile("Net", money(s.net), s.net < 0 ? "neg" : "pos",
+         "Income − Expenses. Transfers are excluded on both sides, so moving money between your own accounts never changes this.") +
+    tile("Cash flow", money(s.net_cash), s.net_cash < 0 ? "neg" : "pos",
+         "Every selected transaction summed as-is, transfers included. This is what actually moved through the accounts, and what reconciles against your balances.") +
+    tile("Transfers", money(s.transfers), "", "Total volume moved by transfer-kind categories (both directions)") +
     tile("Transactions", s.count) +
     uncatTile;
   $("tile-uncat").onclick = () => {
@@ -282,10 +328,14 @@ function chartMonth(rows) {
 }
 
 function chartCategory(rows) {
-  const expense = rows.filter((r) => r.kind !== "transfer" && r.kind !== "income");
+  // Only the outgoing side, and only non-transfer categories -- so the bars
+  // here add up to exactly the Expenses tile.
+  const expense = rows
+    .filter((r) => r.kind !== "transfer" && r.expense > 0)
+    .sort((a, b) => b.expense - a.expense);
   const top = expense.slice(0, 10);
-  const rest = expense.slice(10).reduce((s, r) => s + r.total, 0);
-  const items = top.map((r) => ({ label: r.category, value: r.total, color: catColor[r.category] || OTHER }));
+  const rest = expense.slice(10).reduce((s, r) => s + r.expense, 0);
+  const items = top.map((r) => ({ label: r.category, value: r.expense, color: catColor[r.category] || OTHER }));
   if (rest > 0) items.push({ label: "Other", value: +rest.toFixed(2), color: OTHER });
   hbar("chart-cat", items, OTHER);
 }

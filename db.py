@@ -23,6 +23,12 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "money.sqlite"
 
+# Which balance to treat as "the" balance, best first. CLBD (closing booked) is
+# preferred because it counts exactly the booked transactions we store, so it
+# reconciles against SUM(signed_amount). ITAV (interim available) includes
+# pending authorisations and any overdraft line, which never reconciles.
+BALANCE_PREFERENCE = ("CLBD", "ITBD", "ITAV", "OTHR")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
   account_key       TEXT PRIMARY KEY,   -- identification_hash (stable)
